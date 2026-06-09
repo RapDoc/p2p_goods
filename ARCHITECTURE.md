@@ -294,7 +294,7 @@ from schemas import DocumentQualityResponse
 
 # Classifier package - relative imports
 from classifier.graph import build_document_classification_graph
-from classifier.nodes.extract_text import extract_text_node
+from classifier.classifier import extract_text_node
 ```
 
 ### Within Classifier Package

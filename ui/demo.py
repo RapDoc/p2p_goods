@@ -34,7 +34,7 @@ class State(TypedDict):
     # Supplier loop
     supplier_query_status: str
     
-OCR_THRESHOLD = 0.75
+OCR_THRESHOLD = 0.60
 
 #Node 1 - Uploading Documents
 def upload_documents(state: State) -> dict:
@@ -52,9 +52,9 @@ def upload_documents(state: State) -> dict:
 def classify_documents(state: State) -> dict:
     docs = state["uploaded_documents"]
     classified = {
-        "Purchase Order": [docs[0]],
-        "Delivery Challan": [docs[1]],
-        "Invoice": [docs[2]],
+        "purchase_order": [docs[0]],
+        "delivery_challan": [docs[1]],
+        "tax_invoice": [docs[2]],
     }
 
     print("\n[classify_documents] Classification complete")

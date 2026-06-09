@@ -325,7 +325,7 @@ AZURE_OPENAI_DEPLOYMENT=gpt-4
 ### Configurable Parameters
 ```python
 # Quality threshold in Decision Node 1
-quality_threshold = 0.60  # Change to 0.70 for stricter validation
+quality_threshold = 0.60  # Change to 0.60 for stricter validation
 
 # Expected document types
 expected_types = {"PO", "Invoice", "Delivery Challan"}  # Modify as needed

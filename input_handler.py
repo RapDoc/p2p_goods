@@ -1,7 +1,7 @@
 import base64
 from typing import Dict, Any
 from ocr_utils import extract_text_from_file
-from openai_utils import is_openai_enabled, query_openai_json
+from openai_utils import is_azure_openai_enabled, query_openai_structured
 from extractors import extract_fields_for_document, MANDATORY_FIELDS
 
 print("input_handler: module loaded")
@@ -16,12 +16,12 @@ def process_document(file_bytes: bytes, filename: str, document_type: str) -> Di
     fields, missing = extract_fields_for_document(document_type, pages, tables)
     method_used = "rule_based"
 
-    if is_openai_enabled() and missing:
+    if is_azure_openai_enabled() and missing:
         try:
             print("input_handler: invoking OpenAI extraction fallback")
             prompt = (
                 "Extract structured fields for a document of type "
-                f"{document_type}. Return JSON with keys 'extracted_fields', 'missing_fields', and 'required_fields'. "
+                f"{document_type}. "
                 "Use the provided page text and table records. If a field is unavailable, return an empty string."
                 "Document text pages:\n"
             )
@@ -32,24 +32,26 @@ def process_document(file_bytes: bytes, filename: str, document_type: str) -> Di
             for page_tables in tables:
                 prompt += f"{page_tables}\n"
 
-            prompt += "\nRespond with valid JSON only."
+            # prompt += "\nRespond with valid JSON only."
 
-            extraction_result = query_openai_json(prompt, max_tokens=512)
-            fields = extraction_result.get("extracted_fields", fields)
-            missing = extraction_result.get("missing_fields", missing)
-            required = extraction_result.get("required_fields", required)
+            extraction_result = query_openai_structured(prompt, document_type=document_type)
+            fields = extraction_result.model_dump()
+            # fields = extraction_result.get("extracted_fields", fields)
+            # missing = extraction_result.get("missing_fields", missing)
+            # required = extraction_result.get("required_fields", required)
             method_used = "gpt-4"
         except Exception as exc:
             print(f"input_handler: OpenAI extraction fallback failed: {exc}")
             method_used = "rule_based"
 
-    required = MANDATORY_FIELDS.get(document_type.lower().replace(" ", "_"), required)
+    # required = MANDATORY_FIELDS.get(document_type.lower().replace(" ", "_"), required)
 
     response = {
         "document_type": document_type,
-        "extracted_fields": fields,
-        "missing_fields": missing,
-        "required_fields": required,
+        # "extracted_fields": fields,
+        # "missing_fields": missing,
+        # "required_fields": required,
+        "fields": fields,
         "pages_count": len(pages),
         "method_used": method_used,
         "page_bytes_base64": base64.b64encode(file_bytes).decode("utf-8"),

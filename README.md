@@ -32,7 +32,7 @@ Response model:
   "pages": [
     {
       "page_number": 1,
-      "quality_score": 0.75,
+      "quality_score": 0.60,
       "is_compliant": true,
       "reasons": [],
       "flowback_status": null,

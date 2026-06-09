@@ -1,14 +1,36 @@
 from __future__ import annotations
 
-import easyocr
-import numpy as np
+import os
 
-READER = easyocr.Reader(["en"], gpu=False)
+import numpy as np
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
+ENABLE_OCR = os.getenv("ENABLE_OCR", "True").lower() == "true"
+OCR_LANGUAGE = os.getenv("OCR_LANGUAGE", "en")
+EASYOCR_GPU = os.getenv("EASYOCR_GPU", "False").lower() == "true"
+READER = None
+
+
+def get_easyocr_reader():
+    global READER
+
+    if READER is None:
+        import easyocr
+
+        READER = easyocr.Reader([OCR_LANGUAGE], gpu=EASYOCR_GPU)
+
+    return READER
 
 
 def extract_text_from_image(image: np.ndarray) -> tuple[str, float]:
+    if not ENABLE_OCR:
+        return "", 0.0
+
     try:
-        results = READER.readtext(image, detail=1)
+        results = get_easyocr_reader().readtext(image, detail=1)
     except RuntimeError as exc:
         raise ValueError("OCR engine failed") from exc
 

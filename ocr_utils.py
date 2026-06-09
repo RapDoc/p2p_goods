@@ -7,6 +7,9 @@ import pytesseract
 import pdfplumber
 
 
+# For Windows (Double-check your exact installation folder)
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
 def pdf_to_pages_bytes(pdf_bytes: bytes) -> List[bytes]:
     pages = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:

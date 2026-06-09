@@ -11,10 +11,12 @@ from pypdf import PdfReader, PdfWriter
 
 print("main: module loaded")
 
-from classifier.nodes.classify_pages import classify_pages_node
-from classifier.nodes.extract_text import extract_text_node
-from classifier.nodes.group_pages import group_pages_node
-from classifier.nodes.validate_input import validate_input_node
+from classifier.classifier import (
+    classify_pages_node,
+    extract_text_node,
+    group_pages_node,
+    validate_input_node,
+)
 from input_handler import process_document
 from quality_checks import evaluate_document
 from schemas import DocumentQualityResponse, PageQualityResponse
@@ -216,6 +218,18 @@ def classifier_agent(file_path: str, file_name: str) -> tuple[list[dict], list[d
 def merge_quality_and_classifier_data(quality_pages: list[dict], classified_pages: list[dict]) -> list[MergedPageData]:
     """Merge quality and classifier outputs by page number."""
     print("orchestration: merging quality and classifier data")
+    print("-"*50, "quality_pages", "-"*50)
+    # for page in quality_pages:
+    #     print(page["page_number"])
+    #     print(page["quality_score"])
+    #     print(page["is_compliant"])
+    #     print(page["reasons"])
+    #     print(page["flowback_status"])
+    #     print(page["schema_version"])
+    #     print(page["quality_checks"])
+    #     print(page["analysis_method"])
+
+    print("-"*50, "classified_pages", "-"*50, classified_pages)
     merged = {}
     
     for page in quality_pages:
@@ -253,7 +267,7 @@ def decision_node_1(merged_pages: list[MergedPageData], quality_threshold: float
         if page.quality_score is not None and page.quality_score < quality_threshold:
             issues.append(f"Page {page.page_number}: quality {page.quality_score:.2f} below threshold")
     
-    expected_types = {"PO", "Invoice", "Delivery Challan"}
+    expected_types = {"purchase_order", "tax_invoice", "delivery_challan"}
     found_types = {page.document_type for page in merged_pages if page.document_type and page.document_type != "Unknown"}
     missing_types = expected_types - found_types
     
@@ -447,8 +461,8 @@ async def orchestrate(file: UploadFile):
             extracted_data.append({
                 "document_type": document["document_type"],
                 "document_name": document["document_name"],
-                "extracted_fields": extraction_result["extracted_fields"],
-                "missing_fields": extraction_result["missing_fields"],
+                "extracted_fields": extraction_result["fields"],
+                # "missing_fields": extraction_result["missing_fields"],
                 "method_used": extraction_result.get("method_used", "rule_based")
             })
         

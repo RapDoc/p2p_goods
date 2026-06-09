@@ -13,7 +13,7 @@ from image_utils import (
     measure_resolution,
     to_grayscale,
 )
-from openai_utils import is_openai_enabled, query_openai
+from openai_utils import is_azure_openai_enabled, query_openai
 from PIL import Image
 from text_utils import extract_text_from_image, format_confidence, get_clarity_rating, get_content_coverage
 
@@ -46,12 +46,12 @@ def evaluate_single_page(image_array, page_number: int, schema: Dict) -> Dict[st
     clarity = get_clarity_rating(blur, contrast, skew)
 
     quality_components = [
-        clamp(blur / 160.0),
-        clamp(contrast / 80.0),
-        clamp(confidence / 100.0),
+        clamp(blur / 120.0),
+        clamp(contrast / 60.0),
+        clamp(confidence / 90.0),
         clamp(resolution / max(schema["min_resolution"], 1_000_000)),
-        0.80 if cutoff else 1.0,
-        0.30 if blank else 1.0,
+        0.90 if cutoff else 1.0,
+        0.40 if blank else 1.0,
     ]
 
     quality_score = clamp(sum(quality_components) / len(quality_components))
@@ -114,7 +114,7 @@ def evaluate_document(file_bytes: bytes, filename: str) -> List[Dict[str, object
         page_result = evaluate_single_page(image_array, page_num, schema)
         results.append(page_result)
     print(f"quality_checks: completed rule-based evaluation for {len(results)} pages")
-    if not is_openai_enabled():
+    if not is_azure_openai_enabled():
         try:
             print("quality_checks: invoking OpenAI quality review")
             prompt = (
@@ -130,6 +130,7 @@ def evaluate_document(file_bytes: bytes, filename: str) -> List[Dict[str, object
                 )
 
             llm_review = query_openai(prompt, max_tokens=256)
+            print(f"quality_checks: OpenAI review completed:\n{llm_review}")
             for page in results:
                 page["analysis_method"] = "gpt-4"
                 page["llm_quality_review"] = llm_review
