@@ -8,6 +8,14 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pypdf import PdfReader, PdfWriter
+from dataclasses import asdict
+ 
+from normalization_utils import (
+    NormalizedDocument,
+    DOCUMENT_NORMALIZERS,
+    resolve_vendors,
+    build_match_key,
+)
 
 print("main: module loaded")
 
@@ -292,13 +300,62 @@ def extraction_agent(file_path: str, grouped_documents: list[dict], file_bytes: 
         return [], f"extraction_agent error: {str(e)}"
 
 
-# Placeholder agent functions for later implementation (TODO)
 def normalization_agent(extracted_data: list[dict]) -> tuple[list[dict], str]:
-    """TODO: Data Normalization Agent - normalize units, vendor names, item names."""
-    print("orchestration: normalization_agent (TODO - not implemented)")
-    return extracted_data, "TODO"
+    """
+    Args:
+        extracted_data: list of dicts from extraction agent.
+            Each dict: document_type, document_name, extracted_fields, method_used
+ 
+    Returns:
+        (normalized_data, status)
+        Each item in normalized_data has the original keys plus:
+          normalized_fields  — cleaned field values (floats, ISO dates, etc.)
+          match_key          — flat dict for 3-way matching agent
+          normalization_warnings — list of non-fatal issues found during cleaning
+    """
+    if not extracted_data:
+        return [], "no_data"
+ 
+    normalized_docs: list[NormalizedDocument] = []
+ 
+    for item in extracted_data:
+        doc_type = item.get("document_type", "unknown")
+        raw_fields = item.get("extracted_fields") or {}
+        warnings: list[str] = []
+ 
+        normalizer = DOCUMENT_NORMALIZERS.get(doc_type)
+        if normalizer:
+            cleaned_fields = normalizer(raw_fields, warnings)
+        else:
+            cleaned_fields = dict(raw_fields)
+            warnings.append(f"No normalizer defined for document_type '{doc_type}'")
+ 
+        normalized_docs.append(NormalizedDocument(
+            document_type=doc_type,
+            document_name=item.get("document_name", ""),
+            method_used=item.get("method_used", "unknown"),
+            normalized_fields=cleaned_fields,
+            normalization_warnings=warnings,
+        ))
+ 
+    try:
+        vendor_map = resolve_vendors(normalized_docs)
+    except Exception as e:
+        vendor_map = {}
+ 
+    for ndoc in normalized_docs:
+        ndoc.match_key = build_match_key(ndoc, vendor_map)
+        # Inline canonical vendor into fields so downstream agents don't need vendor_map
+        if ndoc.match_key.get("canonical_vendor_name"):
+            ndoc.normalized_fields["canonical_vendor_name"] = ndoc.match_key["canonical_vendor_name"]
+        if ndoc.match_key.get("vendor_gstin"):
+            ndoc.normalized_fields["vendor_gstin"] = ndoc.match_key["vendor_gstin"]
+ 
+    output = [asdict(ndoc) for ndoc in normalized_docs]
+    return output, "success"
 
 
+# Placeholder agent functions for later implementation (TODO)
 def matching_agent(extracted_data: list[dict]) -> tuple[dict, str]:
     """TODO: 3-Way Matching Agent - perform match on PO, Invoice, Delivery Challan."""
     print("orchestration: matching_agent (TODO - not implemented)")
