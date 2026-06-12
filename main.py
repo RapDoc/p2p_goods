@@ -17,6 +17,16 @@ from normalization_utils import (
     build_match_key,
 )
 
+from matching_utils import(
+    find_doc,
+    get_page_for_doc,
+    check_vendor_gstin,
+    check_vendor_name,
+    check_total_value,
+    check_line_items,
+    llm_interpret_mismatches
+)
+
 print("main: module loaded")
 
 from classifier.classifier import (
@@ -153,6 +163,8 @@ class OrchestrationResponse(BaseModel):
     decision_1_result: dict | None = None
     decision_2_result: dict | None = None
     approval_required: bool = False
+    communication_payload: dict | None = None
+    approval_payload: dict | None = None
     message: str
     file_bytes_base64: str | None = None
 
@@ -355,23 +367,196 @@ def normalization_agent(extracted_data: list[dict]) -> tuple[list[dict], str]:
     return output, "success"
 
 
-# Placeholder agent functions for later implementation (TODO)
-def matching_agent(extracted_data: list[dict]) -> tuple[dict, str]:
-    """TODO: 3-Way Matching Agent - perform match on PO, Invoice, Delivery Challan."""
-    print("orchestration: matching_agent (TODO - not implemented)")
-    return {"status": "TODO", "matches": [], "mismatches": []}, "TODO"
+def matching_agent(
+    normalized_data: list[dict],
+    classified_pages: list[dict],
+) -> tuple[dict, str]:
+    """
+    Performs 3-way match: PO (source of truth) vs Invoice vs Delivery Challan.
+
+    Args:
+        normalized_data:  output of normalization_agent (list of normalized doc dicts)
+        classified_pages: output of classifier_agent (list of page dicts with page_number + document_type)
+
+    Returns:
+        (result_dict, status)
+        result_dict keys:
+          result        — "match" | "mismatch"
+          matches       — list of passed check descriptions
+          mismatches    — list of mismatch dicts (field, document_type, page_number, po_value, actual_value, note)
+          summary       — human-readable one-liner
+    """
+    print("matching_agent: starting 3-way match")
+
+    po_doc      = find_doc(normalized_data, "purchase_order")
+    invoice_doc = find_doc(normalized_data, "tax_invoice")
+    challan_doc = find_doc(normalized_data, "delivery_challan")
+
+    # Can't match without PO
+    if not po_doc:
+        return {
+            "result": "mismatch",
+            "matches": [],
+            "mismatches": [],
+            "summary": "3-way match failed: Purchase Order not found in normalized data",
+        }, "error"
+
+    po_fields      = po_doc.get("normalized_fields") or {}
+    invoice_fields = (invoice_doc or {}).get("normalized_fields") or {}
+    challan_fields = (challan_doc or {}).get("normalized_fields") or {}
+
+    invoice_page = get_page_for_doc(classified_pages, "tax_invoice")
+    challan_page = get_page_for_doc(classified_pages, "delivery_challan")
+
+    matches:    list[str]  = []
+    mismatches: list[dict] = []
+
+    # ── Check 1: Vendor GSTIN (PO vs Challan) ──
+    if challan_doc:
+        check_vendor_gstin(po_fields, challan_fields, challan_page, mismatches, matches)
+        check_vendor_name(po_fields, challan_fields, challan_page, mismatches, matches)
+    else:
+        matches.append("vendor checks: skipped (no delivery challan)")
+
+    # ── Check 2: Total value (PO vs Invoice) ──
+    if invoice_doc:
+        check_total_value(po_fields, invoice_fields, invoice_page, mismatches, matches)
+        check_line_items(po_fields, invoice_fields, invoice_page, mismatches, matches)
+    else:
+        matches.append("invoice checks: skipped (no tax invoice)")
+
+    result = "match" if not mismatches else "mismatch"
+
+    summary = (
+        f"3-way match PASSED: {len(matches)} checks passed"
+        if result == "match"
+        else f"3-way match FAILED: {len(mismatches)} mismatch(es) found across {len(matches) + len(mismatches)} checks"
+    )
+
+    print(f"matching_agent: {summary}")
+
+    # LLM interpretation — only on mismatch
+    llm_interpretation = None
+    if mismatches:
+        print("matching_agent: invoking LLM to interpret mismatches")
+        llm_interpretation = llm_interpret_mismatches(
+            mismatches, po_fields, invoice_fields, challan_fields
+        )
+        print(f"matching_agent: LLM recommended action: {llm_interpretation.get('recommended_action')}")
+
+    return {
+        "result": result,
+        "matches": matches,
+        "mismatches": mismatches,
+        "summary": summary,
+        "llm_interpretation": llm_interpretation,
+    }, "success"
+    
+
+def decision_node_2(matching_result: dict) -> tuple[bool, str]:
+    """Decision Node 2: Validates 3-way match result."""
+    print(f"orchestration: decision_node_2 checking matching result")
+    
+    result = matching_result.get("result")
+    summary = matching_result.get("summary", "No summary available")
+    mismatches = matching_result.get("mismatches", [])
+
+    if result == "match":
+        print(f"orchestration: decision_node_2 passed — {summary}")
+        return True, summary
+
+    mismatch_fields = [m.get("field", "unknown") for m in mismatches]
+    reason = f"{summary}. Mismatched fields: {', '.join(mismatch_fields)}"
+    
+    print(f"orchestration: decision_node_2 failed — {reason}")
+    return False, reason
+
+def communication_agent(matching_result: dict) -> dict:
+    """Communication Agent: Formulates a structured message payload for mismatch discrepancies."""
+    print("orchestration: communication_agent invoked")
+
+    mismatches = matching_result.get("mismatches", [])
+    summary = matching_result.get("summary", "3-way match failed")
+    llm_interpretation = matching_result.get("llm_interpretation") or {}
+
+    discrepancy_table = [
+        {
+            "field": m.get("field"),
+            "document_type": m.get("document_type"),
+            "page_number": m.get("page_number"),
+            "po_value": m.get("po_value"),
+            "actual_value": m.get("actual_value"),
+            "note": m.get("note"),
+        }
+        for m in mismatches
+    ]
+
+    email_body = llm_interpretation.get("email_draft") or llm_interpretation.get("recommended_action") or (
+        f"Dear Vendor,\n\n"
+        f"We have identified discrepancies during our 3-way matching process.\n\n"
+        f"Summary: {summary}\n\n"
+        f"Please review the discrepancies and revert at the earliest.\n\n"
+        f"Regards,\nAccounts Payable Team"
+    )
+
+    payload = {
+        "type": "communication",
+        "summary": summary,
+        "discrepancy_table": discrepancy_table,
+        "llm_reasoning": llm_interpretation.get("reasoning"),
+        "email": {
+            "to": None,
+            "subject": f"Discrepancy Notice — {len(mismatches)} mismatch(es) found",
+            "body": email_body,
+        },
+        "actions": [
+            {"id": "send_email", "label": "Send Email to Vendor"},
+            {"id": "flag_for_review", "label": "Flag for Internal Review"},
+            {"id": "escalate", "label": "Escalate to Manager"},
+        ]
+    }
+
+    print(f"communication_agent: payload built with {len(discrepancy_table)} discrepancies")
+    return payload
 
 
-def communication_agent(discrepancy_details: dict) -> str:
-    """TODO: Communication Agent - formulates messages for discrepancies."""
-    print("orchestration: communication_agent (TODO - not implemented)")
-    return "TODO"
+def approval_agent(matching_result: dict, normalized_data: list[dict]) -> dict:
+    """Approval Agent: Raises approval request via chat interface with key fields and actions."""
+    print("orchestration: approval_agent invoked")
 
+    def get_key_fields(normalized_data: list[dict], doc_type: str) -> dict:
+        doc = find_doc(normalized_data, doc_type)
+        if not doc:
+            return {}
+        fields = doc.get("normalized_fields") or {}
+        return {
+            "vendor_name": fields.get("vendor_name") or fields.get("canonical_vendor_name"),
+            "vendor_gstin": fields.get("vendor_gstin"),
+            "total_value": fields.get("total_value") or fields.get("grand_total"),
+            "document_number": fields.get("po_number") or fields.get("invoice_number") or fields.get("challan_number"),
+            "document_date": fields.get("po_date") or fields.get("invoice_date") or fields.get("challan_date"),
+        }
 
-def approval_agent(approval_data: dict) -> dict:
-    """TODO: Approval Agent - raises approval via configured channel."""
-    print("orchestration: approval_agent (TODO - not implemented)")
-    return {"status": "TODO", "approval_id": None}
+    payload = {
+        "type": "approval",
+        "summary": matching_result.get("summary"),
+        "match_result": matching_result.get("result"),
+        "documents": {
+            "purchase_order": get_key_fields(normalized_data, "purchase_order"),
+            "tax_invoice": get_key_fields(normalized_data, "tax_invoice"),
+            "delivery_challan": get_key_fields(normalized_data, "delivery_challan"),
+        },
+        "matches": matching_result.get("matches", []),
+        "actions": [
+            {"id": "approve", "label": "Approve"},
+            {"id": "reject", "label": "Reject"},
+            {"id": "request_more_info", "label": "Request More Info"},
+            {"id": "upload_supporting_doc", "label": "Upload Supporting Document"},
+        ]
+    }
+
+    print(f"orchestration: approval_agent payload built for match result: {matching_result.get('result')}")
+    return payload
 
 
 # --------------------------------------------------
@@ -523,19 +708,31 @@ async def orchestrate(file: UploadFile):
                 "method_used": extraction_result.get("method_used", "rule_based")
             })
         
-        # Step 7: Normalization Agent (TODO)
+        # Step 7: Normalization Agent
         normalized_data, norm_status = normalization_agent(extracted_data)
         print(f"main: Normalization completed with status: {norm_status}")
 
-        # Step 8: Matching Agent (TODO)
-        matching_result, matching_status = matching_agent(normalized_data)
+        # Step 8: Matching Agent
+        matching_result, matching_status = matching_agent(normalized_data, classified_pages)
+        print(f"main: Matching completed with status: {matching_status}")
         
-        # Step 9: Decision Node 2 (TODO - 3-way match check)
-        decision_2_result = {"status": "TODO", "passed": True}
+        # Step 9: Decision Node 2
+        decision_2_passed, decision_2_reason = decision_node_2(matching_result)
+
+        if not decision_2_passed:
+            communication_payload = communication_agent(matching_result)
+            return OrchestrationResponse(
+                workflow_status="decision_2_failed",
+                message=f"3-way match failed. {decision_2_reason}",
+                decision_2_result={"passed": False, "reason": decision_2_reason},
+                approval_required=True,
+                communication_payload=communication_payload,
+                file_bytes_base64=file_bytes_b64
+            )
         
-        # Step 10: Approval Agent (TODO)
-        approval_result = approval_agent({"extracted_data": extracted_data, "matching": matching_result})
-        
+        # Step 10: Approval Agent
+        approval_payload = approval_agent(matching_result, normalized_data)
+
         return OrchestrationResponse(
             workflow_status="success",
             quality_report={"pages": quality_pages},
@@ -551,9 +748,10 @@ async def orchestrate(file: UploadFile):
             ],
             extracted_data=extracted_data,
             decision_1_result={"passed": decision_1_passed, "reason": decision_1_reason},
-            decision_2_result=decision_2_result,
-            approval_required=False,
-            message="Orchestration completed successfully",
+            decision_2_result={"passed": decision_2_passed, "reason": decision_2_reason},
+            approval_required=True,
+            approval_payload=approval_payload,
+            message="Orchestration completed successfully. Awaiting approval.",
             file_bytes_base64=file_bytes_b64
         )
     
@@ -656,11 +854,11 @@ async def health_check():
             "Classifier Agent",
             "Decision Node 1 (Quality Check)",
             "Extraction Agent",
-            "Data Normalization Agent (TODO)",
-            "3-Way Matching Agent (TODO)",
+            "Data Normalization Agent",
+            "3-Way Matching Agent",
             "Decision Node 2 (Matching Check)",
-            "Communication Agent (TODO)",
-            "Approval Agent (TODO)"
+            "Communication Agent",
+            "Approval Agent"
         ],
         "folder_config": {
             "quality_uploads": QUALITY_UPLOAD_FOLDER,
