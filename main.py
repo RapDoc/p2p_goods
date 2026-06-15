@@ -535,7 +535,7 @@ def approval_agent(matching_result: dict, normalized_data: list[dict]) -> dict:
             "vendor_gstin": fields.get("vendor_gstin"),
             "total_value": (fields.get("total_order_value") or fields.get("total_invoice_value")),
             "document_number": fields.get("po_number") or fields.get("invoice_number") or fields.get("challan_number"),
-            "document_date": fields.get("po_date") or fields.get("invoice_date") or fields.get("challan_date"),
+            "document_date": fields.get("po_date") or fields.get("invoice_date") or fields.get("date_of_issue"),
         }
 
     payload = {
