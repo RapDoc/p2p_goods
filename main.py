@@ -491,10 +491,11 @@ def communication_agent(matching_result: dict) -> dict:
         for m in mismatches
     ]
 
-    email_body = llm_interpretation.get("email_draft") or llm_interpretation.get("recommended_action") or (
+    email_body = (
         f"Dear Vendor,\n\n"
         f"We have identified discrepancies during our 3-way matching process.\n\n"
         f"Summary: {summary}\n\n"
+        f"Interpretation: {llm_interpretation.get('interpretation', 'N/A')}\n\n"
         f"Please review the discrepancies and revert at the earliest.\n\n"
         f"Regards,\nAccounts Payable Team"
     )
@@ -532,7 +533,7 @@ def approval_agent(matching_result: dict, normalized_data: list[dict]) -> dict:
         return {
             "vendor_name": fields.get("vendor_name") or fields.get("canonical_vendor_name"),
             "vendor_gstin": fields.get("vendor_gstin"),
-            "total_value": fields.get("total_value") or fields.get("grand_total"),
+            "total_value": (fields.get("total_order_value") or fields.get("total_invoice_value")),
             "document_number": fields.get("po_number") or fields.get("invoice_number") or fields.get("challan_number"),
             "document_date": fields.get("po_date") or fields.get("invoice_date") or fields.get("challan_date"),
         }
