@@ -152,30 +152,25 @@ def check_vendor_name(
         ))
 
 
-def check_total_value(
-    po_fields: dict,
-    invoice_fields: dict,
-    invoice_page: Optional[int],
-    mismatches: list,
-    matches: list,
-):
+def check_total_value(po_fields, invoice_fields, invoice_page, mismatches, matches):
     po_total = po_fields.get("total_order_value")
-    inv_total = invoice_fields.get("total_invoice_value")
+    inv_taxable = invoice_fields.get("taxable_value")   # pre-tax, apples-to-apples
+    inv_total = invoice_fields.get("total_invoice_value")  # keep for reference
 
-    if po_total is None or inv_total is None:
+    if po_total is None or inv_taxable is None:
         matches.append("total_value: skipped (one or both missing)")
         return
 
-    if numeric_match(po_total, inv_total):
-        matches.append(f"total_value: PO={po_total} Invoice={inv_total} ✓")
+    if numeric_match(po_total, inv_taxable):
+        matches.append(f"total_value: PO={po_total} Invoice taxable={inv_taxable} ✓")
     else:
         mismatches.append(make_mismatch(
             field="total_value",
             document_type="tax_invoice",
             page_number=invoice_page,
             po_value=po_total,
-            actual_value=inv_total,
-            note=f"Invoice total {inv_total} differs from PO total {po_total} (diff={abs(inv_total - po_total):.2f})",
+            actual_value=inv_taxable,
+            note=f"Invoice taxable value {inv_taxable} differs from PO total {po_total} (diff={abs(inv_taxable - po_total):.2f}). Invoice total with GST: {inv_total}",
         ))
 
 
