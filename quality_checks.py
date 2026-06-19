@@ -114,7 +114,7 @@ def evaluate_document(file_bytes: bytes, filename: str) -> List[Dict[str, object
         page_result = evaluate_single_page(image_array, page_num, schema)
         results.append(page_result)
     print(f"quality_checks: completed rule-based evaluation for {len(results)} pages")
-    if not is_azure_openai_enabled():
+    if is_azure_openai_enabled():
         try:
             print("quality_checks: invoking OpenAI quality review")
             prompt = (

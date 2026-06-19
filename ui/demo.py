@@ -273,7 +273,7 @@ checkpointer = MemorySaver()
 graph = builder.compile(
     checkpointer=checkpointer
 )
-
+graph.get_graph().print_ascii()
 #Initial State defined
 initial_state:State = {
     "uploaded_documents":   [],
