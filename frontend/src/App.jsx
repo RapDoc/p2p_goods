@@ -35,12 +35,12 @@ export default function App() {
 
     const timers = [
       setTimeout(() => setSimulatedStep(2), 1000),
-      setTimeout(() => setSimulatedStep(3), 4000),
-      setTimeout(() => setSimulatedStep(4), 6000),
-      setTimeout(() => setSimulatedStep(5), 8000),
-      setTimeout(() => setSimulatedStep(6), 9000),
-      setTimeout(() => setSimulatedStep(7), 10000),
-      setTimeout(() => setSimulatedStep(8), 13000),
+      setTimeout(() => setSimulatedStep(3), 9000),
+      setTimeout(() => setSimulatedStep(4), 18000),
+      setTimeout(() => setSimulatedStep(5), 27000),
+      setTimeout(() => setSimulatedStep(6), 36000),
+      setTimeout(() => setSimulatedStep(7), 45000),
+      setTimeout(() => setSimulatedStep(8), 54000),
     ];
 
     return timers;
