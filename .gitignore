@@ -8,6 +8,7 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+data\rag
 
 # LangGraph / SQLite runtime files
 workflow.db

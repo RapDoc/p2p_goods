@@ -5,6 +5,7 @@ import uuid
 import base64
 import sqlite3
 import functools
+import json
 from typing import TypedDict, Optional
 
 from dotenv import load_dotenv
@@ -13,14 +14,24 @@ load_dotenv()
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pypdf import PdfReader, PdfWriter
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import interrupt, Command
 
+from classifier.classifier import (
+    validate_input_node,
+    extract_text_node,
+    classify_pages_node,
+    group_pages_node,
+)
+from rag_agent import build_rag_index, group_ocr_by_doc_type, chat_with_documents
+
 from main import (
     MergedPageData,
+    build_initial_state,
     quality_agent,
     classifier_agent,
     merge_quality_and_classifier_data,
@@ -50,8 +61,11 @@ class GraphState(TypedDict):
 
     quality_pages: list[dict]
     classified_pages: list[dict]
+    extracted_pages: list[dict]
     grouped_documents: list[dict]
     merged_pages: list[dict]
+    rag_indexed: bool
+    rag_chunk_count: int
 
     reuploaded_doc_bytes: dict   # doc_type -> base64 of reuploaded standalone PDF
 
@@ -70,6 +84,7 @@ class GraphState(TypedDict):
 
     status: str
     message: str
+    _thread_id: str
 
 
 # ===========================================================================
@@ -182,10 +197,29 @@ def quality_node(state: GraphState) -> GraphState:
 
 @retry()
 def classifier_node(state: GraphState) -> GraphState:
-    classified, grouped, status = classifier_agent(state["file_path"], state["file_name"])
-    if status != "success":
-        return {**state, "status": "classifier_failed", "message": status}
-    return {**state, "classified_pages": classified, "grouped_documents": grouped, "status": "classifier_done"}
+    # Run the classifier sub-nodes directly so we can also capture extracted_pages
+    # (raw OCR text), which classifier_agent discards. Same logic, fuller output.
+    cstate = build_initial_state(state["file_path"], state["file_name"])
+    cstate = validate_input_node(cstate)
+    if cstate.get("status") == "error":
+        return {**state, "status": "classifier_failed", "message": cstate.get("error", "validation failed")}
+    cstate = extract_text_node(cstate)
+    if cstate.get("status") == "error":
+        return {**state, "status": "classifier_failed", "message": cstate.get("error", "text extraction failed")}
+    cstate = classify_pages_node(cstate)
+    if cstate.get("status") == "error":
+        return {**state, "status": "classifier_failed", "message": cstate.get("error", "classification failed")}
+    cstate = group_pages_node(cstate)
+    if cstate.get("status") == "error":
+        return {**state, "status": "classifier_failed", "message": cstate.get("error", "grouping failed")}
+
+    return {
+        **state,
+        "classified_pages": cstate.get("classified_pages", []),
+        "grouped_documents": cstate.get("grouped_documents", []),
+        "extracted_pages": cstate.get("extracted_pages", []),
+        "status": "classifier_done",
+    }
 
 
 def merge_node(state: GraphState) -> GraphState:
@@ -294,6 +328,34 @@ def matching_node(state: GraphState) -> GraphState:
     return {**state, "matching_result": result, "status": "matching_done"}
 
 
+def rag_index_node(state: GraphState) -> GraphState:
+    """
+    Builds the per-thread RAG knowledge base from structured fields, raw OCR text,
+    and match results. Runs at the end so the chatbot also knows match outcomes.
+    Indexing failure is non-fatal — the pipeline still completes.
+    """
+    print(f"DEBUG rag: extracted_pages={len(state.get('extracted_pages', []))} "
+          f"normalized={len(state.get('normalized_data', []))} "
+          f"thread_id={state.get('_thread_id')}")
+    try:
+        ocr_texts = group_ocr_by_doc_type(
+            state.get("extracted_pages", []),
+            state.get("classified_pages", []),
+        )
+        print(f"DEBUG rag: ocr_texts keys={list(ocr_texts.keys())} "
+              f"total_chars={sum(len(v) for v in ocr_texts.values())}")
+        count = build_rag_index(
+            thread_id=state["_thread_id"],
+            normalized_data=state.get("normalized_data", []),
+            matching_result=state.get("matching_result", {}),
+            ocr_texts=ocr_texts,
+        )
+        return {**state, "rag_indexed": True, "rag_chunk_count": count, "status": "rag_indexed"}
+    except Exception as e:
+        print(f"rag_index_node: indexing failed (non-fatal): {e}")
+        return {**state, "rag_indexed": False, "rag_chunk_count": 0}
+
+
 def decision_2_node(state: GraphState) -> GraphState:
     passed, reason = decision_node_2(state["matching_result"])
 
@@ -361,6 +423,7 @@ def build_graph():
     builder.add_node("extract_fields", extract_fields_node)
     builder.add_node("normalization", normalization_node)
     builder.add_node("matching", matching_node)
+    builder.add_node("rag_index", rag_index_node)
     builder.add_node("decision_2", decision_2_node)
     builder.add_node("approval", approval_node)
     builder.add_node("communication", communication_node)
@@ -381,7 +444,8 @@ def build_graph():
     builder.add_edge("extraction", "extract_fields")
     builder.add_edge("extract_fields", "normalization")
     builder.add_edge("normalization", "matching")
-    builder.add_edge("matching", "decision_2")
+    builder.add_edge("matching", "rag_index")
+    builder.add_edge("rag_index", "decision_2")
     builder.add_conditional_edges(
         "decision_2",
         route_after_decision_2,
@@ -414,7 +478,7 @@ except Exception:
 def _strip_bytes(state: dict) -> dict:
     if not state:
         return state
-    return {k: v for k, v in state.items() if k not in ("file_bytes_base64", "reuploaded_doc_bytes")}
+    return {k: v for k, v in state.items() if k not in ("file_bytes_base64", "reuploaded_doc_bytes", "extracted_pages", "_thread_id")}
 
 
 def _extract_interrupt(result: dict):
@@ -424,6 +488,66 @@ def _extract_interrupt(result: dict):
     return None
 
 
+# Human-readable labels for each node's completion event
+NODE_LABELS = {
+    "quality": "Quality check done",
+    "classifier": "Classification done",
+    "merge": "Merge done",
+    "decision_1": "Quality decision done",
+    "extraction": "Extraction done",
+    "extract_fields": "Field extraction done",
+    "normalization": "Normalization done",
+    "matching": "3-way matching done",
+    "rag_index": "Knowledge base built",
+    "decision_2": "Match decision done",
+    "approval": "Approval ready",
+    "communication": "Discrepancy notice ready",
+}
+
+
+def _sse(payload: dict) -> str:
+    """Format a dict as a Server-Sent Event line."""
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _run_stream(graph_input, config, thread_id):
+    """
+    Shared generator: streams a node-completion event for each node that runs,
+    then a final event (interrupted or done).
+    graph_input is either the initial state dict or a Command(resume=...).
+    """
+    last_state = {}
+    for chunk in graph.stream(graph_input, config=config, stream_mode="updates"):
+        # chunk = {node_name: state_delta} after each node finishes
+        for node_name, delta in chunk.items():
+            if node_name == "__interrupt__":
+                continue
+            last_state = {**last_state, **(delta or {})}
+            yield _sse({
+                "thread_id": thread_id,
+                "event": "node_done",
+                "node": node_name,
+                "label": NODE_LABELS.get(node_name, node_name),
+            })
+
+    # After the stream ends, check whether we paused on an interrupt
+    snapshot = graph.get_state(config)
+    interrupts = snapshot.tasks[0].interrupts if snapshot.tasks else []
+    if interrupts:
+        yield _sse({
+            "thread_id": thread_id,
+            "event": "interrupted",
+            "interrupt": interrupts[0].value,
+        })
+    else:
+        yield _sse({
+            "thread_id": thread_id,
+            "event": "done",
+            "status": snapshot.values.get("status"),
+            "state": _strip_bytes(snapshot.values),
+        })
+
+
 @app.post("/graph/orchestrate")
 async def orchestrate(file: UploadFile):
     payload = await file.read()
@@ -431,13 +555,16 @@ async def orchestrate(file: UploadFile):
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
     file_path = save_bytes_to_folder(payload, file.filename, CLASSIFIER_UPLOAD_FOLDER)
+    thread_id = str(uuid.uuid4())
 
     initial_state = {
         "file_path": file_path,
         "file_name": file.filename,
         "file_bytes_base64": encode_bytes(payload),
-        "quality_pages": [], "classified_pages": [], "grouped_documents": [], "merged_pages": [],
+        "quality_pages": [], "classified_pages": [], "extracted_pages": [], "grouped_documents": [], "merged_pages": [],
+        "rag_indexed": False, "rag_chunk_count": 0,
         "reuploaded_doc_bytes": {},
+        "_thread_id": thread_id,
         "extracted_data": [], "normalized_data": [], "matching_result": {},
         "decision_1_passed": None, "decision_1_reason": None, "failed_doc_types": [],
         "decision_2_passed": None, "decision_2_reason": None,
@@ -445,14 +572,12 @@ async def orchestrate(file: UploadFile):
         "status": "started", "message": "",
     }
 
-    thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
-    result = graph.invoke(initial_state, config=config)
 
-    interrupt_payload = _extract_interrupt(result)
-    if interrupt_payload:
-        return {"thread_id": thread_id, "status": "interrupted", "interrupt": interrupt_payload, "state": _strip_bytes(result)}
-    return {"thread_id": thread_id, "status": result.get("status"), "state": _strip_bytes(result)}
+    return StreamingResponse(
+        _run_stream(initial_state, config, thread_id),
+        media_type="text/event-stream",
+    )
 
 
 @app.post("/graph/resume/{thread_id}")
@@ -468,12 +593,10 @@ async def resume_decision_1(thread_id: str, files: list[UploadFile] = File(...))
         if b:
             reuploaded_files[f.filename] = base64.b64encode(b).decode("utf-8")
 
-    result = graph.invoke(Command(resume={"reuploaded_files": reuploaded_files}), config=config)
-
-    interrupt_payload = _extract_interrupt(result)
-    if interrupt_payload:
-        return {"thread_id": thread_id, "status": "interrupted", "interrupt": interrupt_payload, "state": _strip_bytes(result)}
-    return {"thread_id": thread_id, "status": result.get("status"), "state": _strip_bytes(result)}
+    return StreamingResponse(
+        _run_stream(Command(resume={"reuploaded_files": reuploaded_files}), config, thread_id),
+        media_type="text/event-stream",
+    )
 
 
 @app.post("/graph/resume-approval/{thread_id}")
@@ -483,12 +606,25 @@ async def resume_decision_2(thread_id: str, approved: bool = Form(...), reason: 
     if not snapshot.values:
         raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found")
 
-    result = graph.invoke(Command(resume={"approved": approved, "reason": reason}), config=config)
+    return StreamingResponse(
+        _run_stream(Command(resume={"approved": approved, "reason": reason}), config, thread_id),
+        media_type="text/event-stream",
+    )
 
-    interrupt_payload = _extract_interrupt(result)
-    if interrupt_payload:
-        return {"thread_id": thread_id, "status": "interrupted", "interrupt": interrupt_payload, "state": _strip_bytes(result)}
-    return {"thread_id": thread_id, "status": result.get("status"), "state": _strip_bytes(result)}
+
+@app.post("/graph/chat/{thread_id}")
+async def chat(thread_id: str, question: str = Form(...)):
+    """
+    Ask a question about the processed documents for this thread.
+    Requires the pipeline to have finished (rag_index_node ran).
+    """
+    result = chat_with_documents(thread_id, question)
+    return {
+        "thread_id": thread_id,
+        "question": question,
+        "answer": result["answer"],
+        "sources": result["sources"],
+    }
 
 
 @app.get("/graph/state/{thread_id}")
@@ -507,4 +643,4 @@ async def get_state(thread_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
