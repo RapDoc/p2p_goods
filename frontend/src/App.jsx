@@ -8,6 +8,8 @@ import ResultsPanel from "./components/ResultsPanel";
 import JsonViewer from "./components/JsonViewer";
 import RagChat from "./components/RagChat";
 import PdfPreview from "./components/PdfPreview";
+import CollapsibleCard from "./components/CollapsibleCard";
+import WorkflowStatusCard from "./components/WorkflowStatusCard";
 
 import {
   orchestrateWorkflow,
@@ -24,7 +26,7 @@ export default function App() {
   const [workflowState, setWorkflowState] = useState(null);
   const [interrupt, setInterrupt] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [simulatedStep, setSimulatedStep] = useState(0);
+  const [currentNode, setCurrentNode] = useState(null);
 
   // NEW: toggle chat page
   const [showChat, setShowChat] = useState(false);
@@ -37,32 +39,12 @@ export default function App() {
   }
 
   function handleStreamEvent(payload) {
-    // First event already includes thread_id
     if (payload.thread_id) {
       setThreadId(payload.thread_id);
     }
 
-    // node progress updates
-    if (payload.event === "node_done") {
-      const nodeOrder = {
-        quality: 2,
-        classifier: 3,
-        merge: 3,
-        decision_1: 4,
-        extraction: 5,
-        extract_fields: 5,
-        normalization: 6,
-        matching: 7,
-        rag_index: 7,
-        decision_2: 8,
-        approval: 9,
-        communication: 9,
-      };
-
-      const step = nodeOrder[payload.node];
-      if (step) {
-        setSimulatedStep((prev) => Math.max(prev, step));
-      }
+    if (payload.node) {
+      setCurrentNode(payload.node);
     }
   }
 
@@ -74,7 +56,7 @@ export default function App() {
 
     try {
       setLoading(true);
-      setSimulatedStep(1);
+      setCurrentNode("upload");
       setInterrupt(null);
       setWorkflowState(null);
       setStatus("started");
@@ -92,7 +74,7 @@ export default function App() {
         setStatus(finalEvent.status || "done");
         setWorkflowState(finalEvent.state || null);
         setInterrupt(null);
-        setSimulatedStep(9);
+        setStatus("success");
       }
     } catch (err) {
       console.error(err);
@@ -122,7 +104,7 @@ export default function App() {
         setStatus(finalEvent.status || "done");
         setWorkflowState(finalEvent.state || null);
         setInterrupt(null);
-        setSimulatedStep(9);
+        setStatus("success");
       }
     } catch (err) {
       console.error(err);
@@ -156,7 +138,7 @@ export default function App() {
         setStatus(finalEvent.status || "done");
         setWorkflowState(finalEvent.state || null);
         setInterrupt(null);
-        setSimulatedStep(9);
+        setStatus("success");
       }
     } catch (err) {
       console.error(err);
@@ -211,13 +193,11 @@ export default function App() {
             interrupt={interrupt}
           />
 
-          <WorkflowStepper
-            status={status}
-            state={workflowState}
-            interrupt={interrupt}
-            simulatedStep={simulatedStep}
+          <WorkflowStatusCard
+              currentNode={currentNode}
+              status={status}
+              interrupt={interrupt}
           />
-
           <InterruptPanel
             interrupt={interrupt}
             loading={loading}
@@ -227,9 +207,24 @@ export default function App() {
         </div>
 
         <div className="right-column">
-          <PdfPreview file={mainFile} />
-          <ResultsPanel state={workflowState} />
-          <JsonViewer data={workflowState} />
+          <CollapsibleCard
+              title="PDF Preview"
+              defaultOpen={true}
+          >
+              <PdfPreview file={mainFile}/>
+          </CollapsibleCard>
+          <CollapsibleCard
+              title="Workflow Outputs"
+              defaultOpen={true}
+          >
+              <ResultsPanel state={workflowState}/>
+          </CollapsibleCard>
+          <CollapsibleCard
+              title="Raw State JSON"
+              defaultOpen={false}
+          >
+              <JsonViewer data={workflowState}/>
+          </CollapsibleCard>
         </div>
       </div>
     </div>

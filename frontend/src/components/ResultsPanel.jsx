@@ -1,3 +1,7 @@
+import CollapsibleCard from "./CollapsibleCard";
+import MatchingCard from "./MatchingCard";
+import ApprovalCard from "./ApprovalCard";
+import CommunicationCard from "./CommunicationCard";
 function renderValue(value) {
   if (value === undefined || value === null || value === "") return "—";
   if (Array.isArray(value)) {
@@ -144,10 +148,9 @@ function ChallanCard({ state }) {
   );
 }
 
-function JsonBlock({ title, data }) {
+function JsonBlock({ data }) {
   return (
     <div className="sub-card">
-      <div className="sub-card-title">{title}</div>
       <pre>{data ? JSON.stringify(data, null, 2) : "null"}</pre>
     </div>
   );
@@ -157,22 +160,26 @@ export default function ResultsPanel({ state }) {
   if (!state) return null;
 
   return (
-    <section className="card results-panel">
-      <div className="card-header">
-        <h2>Workflow Outputs</h2>
-      </div>
+    <div className="results-panel">
 
       <div className="results-grid results-grid-docs">
         <PoCard state={state} />
         <InvoiceCard state={state} />
         <ChallanCard state={state} />
       </div>
+      <CollapsibleCard title="Matching Summary">
+          <MatchingCard data={state?.matching_result}/>
+      </CollapsibleCard>
 
-      <div className="results-grid extra-results-grid">
-        <JsonBlock title="Matching Result" data={state?.matching_result} />
-        <JsonBlock title="Approval Payload" data={state?.approval_payload} />
-        <JsonBlock title="Communication Payload" data={state?.communication_payload} />
-      </div>
-    </section>
+      <CollapsibleCard title="Approval Summary">
+          <ApprovalCard data={state?.approval_payload}/>
+      </CollapsibleCard>
+
+      <CollapsibleCard title="Communication Draft">
+          <CommunicationCard
+              data={state?.communication_payload}
+          />
+      </CollapsibleCard>
+    </div>
   );
 }
